@@ -1,0 +1,71 @@
+Title: 
+Evince Integer Overflow and Truncation Due to Type Promotion in TIFF Backend
+
+Description:
+In the tiff_document_get_page_size() function of (backend/tiff/tiff-document.c), type promotion occurs when multiplying an unsigned 32-bit integer (guint32) by a float (gfloat). This leads to potential integer overflow or truncation when large resolution values are used in TIFF files.
+
+Product Version:
+evince --version GNOME Document Viewer 43.1 (default on Debian 12)
+Current 44.2 (stable) also effected
+
+
+Host Environment: Running on vanilla Debian install
+    Operating System: Debian GNU/Linux 12 (bookworm)  
+    Kernel: Linux 6.1.0-20-arm64
+    Architecture: arm64
+
+Gitlab code:
+ - Repo: https://gitlab.gnome.org/GNOME/evince
+ - Curent 44.2 (stable)
+    - Vulnerable function: https://gitlab.gnome.org/GNOME/evince/-/blob/main/backend/tiff/tiff-document.c?ref_type=heads#L193-L221
+- Debian default 43.1
+    - Vulnerable function: https://gitlab.gnome.org/GNOME/evince/-/blob/gnome-43/backend/tiff/tiff-document.c?ref_type=heads#L195-L223
+
+My comments on the vulnerable code:
+static void
+tiff_document_get_page_size (EvDocument *document,
+			     EvPage     *page,
+			     double     *width,
+			     double     *height)
+{
+	guint32 w, h;
+	gfloat x_res, y_res;
+	TiffDocument *tiff_document = TIFF_DOCUMENT (document);
+	
+	g_return_if_fail (TIFF_IS_DOCUMENT (document));
+	g_return_if_fail (tiff_document->tiff != NULL);
+	
+	push_handlers ();
+	if (TIFFSetDirectory (tiff_document->tiff, page->index) != 1) {
+		pop_handlers ();
+		return;
+	}
+	
+	TIFFGetField (tiff_document->tiff, TIFFTAG_IMAGEWIDTH, &w);
+	TIFFGetField (tiff_document->tiff, TIFFTAG_IMAGELENGTH, &h);
+	tiff_document_get_resolution (tiff_document, &x_res, &y_res);
+	// call_eax: Type promotion: h (guint32) is promoted to float (before) for the multiplication
+	// call_eax: x_res and y_res are gfloat, so x_res / y_res is a float
+	h = h * (x_res / y_res); //call_eax: h is an uint so truncation will happen we assigned back to h
+	
+	*width = w;
+	*height = h; // call_eax: This can cause truncation and incorrect height calculation
+	
+	pop_handlers ();
+}
+
+
+Steps to Reproduce:
+ - Create a TIFF file (high resolution helps alot here) using the provided Python script.
+ - Load and process this TIFF file in the application Evince
+ - Observe the incorrect handling of image dimensions, resulting ever lasting "Loading...", in overflow or truncation
+
+Expected Behavior:
+ - The application should handle the large resolution values correctly, maintaining accurate image dimensions.
+
+Actual Behavior:
+ - The application fails to handle the large resolution values correctly, leading to incorrect dimension calculations due to integer overflow or truncation.
+
+ Impact:
+ - Incorrect image dimensions and potential data corruption.
+ - Possible security vulnerabilities due to buffer overflows or unexpected behavior.
